@@ -7,9 +7,19 @@ from scipy.optimize import curve_fit
 from io import BytesIO
 
 # ==========================================
-# 1. SETUP & CONFIG
+# 1. SETUP & CONSTANTS (ประกาศตัวแปรคงที่)
 # ==========================================
 st.set_page_config(page_title="MTT Analysis Pro", page_icon="🧪", layout="wide")
+
+# กำหนดตัวแปรสำหรับกราฟไว้ตรงนี้ (Global) เพื่อป้องกัน NameError
+MARKER_MAP = {
+    "Star (*)": '*', 
+    "Diamond (D)": 'D', 
+    "Circle (o)": 'o', 
+    "Cross (X)": 'X', 
+    "Triangle (^)": '^'
+}
+POINT_MARKERS = ['o', 's']  # จุดข้อมูล (วงกลม, สี่เหลี่ยม)
 
 # --- Core Math Functions ---
 def four_PL(x, A, B, C, D):
@@ -94,7 +104,7 @@ def analyze_data(df, blank_od):
         return {'df': stats_df, 'success': False, 'ic50': None, 'r2': 0}
 
 # ==========================================
-# 2. SIDEBAR SETTINGS (Graph Style & Template)
+# 2. SIDEBAR SETTINGS
 # ==========================================
 st.title("🧪 MTT Analysis: Custom Graphing")
 st.markdown("วิเคราะห์ IC50/CC50 พร้อมระบุชื่อเซลล์และปรับแต่งกราฟได้ตามต้องการ")
@@ -102,7 +112,7 @@ st.markdown("วิเคราะห์ IC50/CC50 พร้อมระบุ�
 with st.sidebar:
     st.header("📥 Tools & Settings")
     
-    # --- Template Download Button ---
+    # Template Download
     template_df = create_template()
     st.download_button(
         label="📄 Download Data Template",
@@ -125,12 +135,11 @@ with st.sidebar:
     
     marker_choice = st.selectbox(
         "IC50/CC50 Marker Shape", 
-        ["Star (*)", "Diamond (D)", "Circle (o)", "Cross (X)", "Triangle (^)"]
+        list(MARKER_MAP.keys())
     )
-    marker_map = {"Star (*)": '*', "Diamond (D)": 'D', "Circle (o)": 'o', "Cross (X)": 'X', "Triangle (^)": '^'}
 
 # ==========================================
-# 3. INPUT SECTION (With Name Editing)
+# 3. INPUT SECTION
 # ==========================================
 
 # เลือกโหมด
@@ -236,6 +245,7 @@ if ready:
         # --- PLOTTING ---
         st.markdown("### 📈 Dose-Response Curve")
         
+        # Theme Setup
         theme_cfg = {
             "Standard (Red/Blue)": {'style': 'whitegrid', 'colors': ['#E63946', '#1D3557'], 'bg': 'white'},
             "Publication (Black/White)": {'style': 'ticks', 'colors': ['black', '#666666'], 'bg': 'white'},
@@ -250,4 +260,58 @@ if ready:
         ax.set_facecolor(selected_theme['bg'])
         
         colors = selected_theme['colors']
-        markers
+        
+        # ดึง Marker ที่เลือกมาจากตัวแปร Global
+        ic50_marker_symbol = MARKER_MAP[marker_choice]
+        
+        idx = 0
+        for key, res in results.items():
+            if not res['success']: continue
+            df = res['df']
+            mask = df['Concentration'] > 0
+            
+            c = colors[idx % 2]
+            
+            # Use Global POINT_MARKERS (แก้ปัญหา NameError)
+            pt_marker = POINT_MARKERS[idx % 2]
+            
+            # Plot Data
+            ax.errorbar(df.loc[mask, 'Concentration'], df.loc[mask, '% Survival'], 
+                        yerr=df.loc[mask, 'SD'], fmt=pt_marker, color=c, 
+                        capsize=4, label=f"{res['name']} Data", alpha=0.7)
+            
+            # Plot Fit Line
+            x_smooth = np.logspace(np.log10(df.loc[mask, 'Concentration'].min()/2), np.log10(df.loc[mask, 'Concentration'].max()*2), 100)
+            val_label = f"{res['ic50']:.2f}"
+            ax.plot(x_smooth, four_PL(x_smooth, *res['popt']), '-', color=c, linewidth=2, label=f"{res['name']} Fit ({val_label})")
+            
+            # Plot IC50 Point
+            ax.plot(res['ic50'], 50, marker=ic50_marker_symbol, color='gold', markersize=12, markeredgecolor='black', zorder=10)
+            
+            idx += 1
+            
+        ax.set_xscale('log')
+        ax.axhline(50, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlabel('Concentration')
+        ax.set_ylabel('% Cell Survival')
+        ax.set_ylim(-10, 120)
+        ax.legend(frameon=True, fancybox=True, shadow=True)
+        ax.grid(True, which='major', alpha=0.3)
+        
+        col_plot, col_dl = st.columns([3, 1])
+        with col_plot: st.pyplot(fig)
+        with col_dl:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+            st.download_button("💾 Download Graph (300 DPI)", data=buf.getvalue(), file_name="MTT_Custom_Graph.png", mime="image/png")
+            
+        st.divider()
+        st.markdown("### 📋 Download Report")
+        for key, res in results.items():
+            with st.expander(f"View Data: {res['name']}"):
+                st.dataframe(res['df'])
+                st.download_button(f"Download CSV ({res['name']})", data=convert_df(res['df']), file_name=f"{res['name']}_data.csv")
+
+else:
+    st.info("👈 กรุณากรอกข้อมูลให้ครบถ้วนเพื่อเริ่มวิเคราะห์")
