@@ -6,34 +6,57 @@ import seaborn as sns
 from scipy.optimize import curve_fit
 from io import BytesIO
 
-# --- Page Config ---
-st.set_page_config(page_title="MTT Assay Analyzer", page_icon="🧪", layout="wide")
+# ==========================================
+# 1. SETUP & CONFIG
+# ==========================================
+st.set_page_config(page_title="MTT Analysis Pro", page_icon="🧪", layout="wide")
 
-# --- Core Functions ---
+# --- Core Math Functions ---
 def four_PL(x, A, B, C, D):
     return D + (A - D) / (1.0 + (x / C)**B)
-
-def create_template():
-    df = pd.DataFrame({
-        'Concentration': [0, 1, 10, 100],
-        'Rep1': [1.0, 0.9, 0.5, 0.1],
-        'Rep2': [1.02, 0.88, 0.48, 0.12],
-        'Rep3': [0.98, 0.92, 0.52, 0.09]
-    })
-    return df
 
 @st.cache_data
 def convert_df(df):
     return df.to_csv(index=False).encode('utf-8')
 
+def parse_manual_input(text_input):
+    """แปลงข้อความ Manual Input เป็น DataFrame"""
+    try:
+        data = []
+        lines = text_input.strip().split('\n')
+        for line in lines:
+            if not line.strip(): continue
+            parts = [float(x.strip()) for x in line.split(',')]
+            data.append(parts)
+        if not data: return None
+        n_reps = len(data[0]) - 1
+        cols = ['Concentration'] + [f'Rep{i+1}' for i in range(n_reps)]
+        return pd.DataFrame(data, columns=cols)
+    except:
+        return None
+
+def generate_mock_data(is_normal=False):
+    """สร้างข้อมูลจำลอง"""
+    ic50_target = 15
+    concs = np.array([0, 0.1, 1, 5, 10, 50, 100, 500])
+    actual_ic50 = ic50_target * 10 if is_normal else ic50_target
+    def sim_od(c, center):
+        if c == 0: base_od = 1.0 
+        else: 
+            viability = four_PL(c, 0, 1.2, center, 100)
+            base_od = (viability / 100) * 1.0
+        return np.random.normal(base_od, 0.05 * base_od, 3) + 0.05
+    data = [sim_od(c, actual_ic50) for c in concs]
+    cols = ['Concentration'] + [f'Rep{i+1}' for i in range(3)]
+    df = pd.DataFrame(columns=cols)
+    df['Concentration'] = concs
+    for i in range(3): df[f'Rep{i+1}'] = [row[i] for row in data]
+    return df
+
 def analyze_data(df, blank_od):
-    # Logic เดิมจากการคำนวณ
+    """ฟังก์ชันคำนวณและ Fit Curve"""
     control_row = df[df['Concentration'] == 0]
-    if control_row.empty:
-        raw_control = df.iloc[:, 1:].max().mean()
-    else:
-        raw_control = control_row.iloc[:, 1:].values.mean()
-    
+    raw_control = df.iloc[:, 1:].max().mean() if control_row.empty else control_row.iloc[:, 1:].values.mean()
     corrected_control = raw_control - blank_od
     
     stats = []
@@ -48,7 +71,6 @@ def analyze_data(df, blank_od):
     
     stats_df = pd.DataFrame(stats, columns=['Concentration', 'Mean OD', 'Corrected Mean', 'SD', '%CV', '% Survival'])
     
-    # Fitting
     fit_df = stats_df[stats_df['Concentration'] >= 0]
     x, y = fit_df['Concentration'].values, fit_df['% Survival'].values
     p0 = [0, 1.0, np.median(x[x>0]) if len(x[x>0]) else 1, 100]
@@ -62,89 +84,161 @@ def analyze_data(df, blank_od):
     except:
         return {'df': stats_df, 'success': False, 'ic50': None, 'r2': 0}
 
-# --- UI Design ---
-st.title("🧪 Auto MTT Assay Analysis Tool")
-st.markdown("Web App สำหรับวิเคราะห์ IC50, CC50 และ SI พร้อมกราฟ Publication Quality")
+# ==========================================
+# 2. SIDEBAR SETTINGS (Graph Style)
+# ==========================================
+st.title("🧪 MTT Analysis: Custom Graphing")
+st.markdown("วิเคราะห์ IC50/CC50 พร้อมระบุชื่อเซลล์และปรับแต่งกราฟได้ตามต้องการ")
 
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("⚙️ General Settings")
     blank_od = st.number_input("Blank OD Value", value=0.05, step=0.01)
-    theme = st.selectbox("Graph Theme", ["Standard (Red/Blue)", "Publication (Black/White)", "Pastel", "Nature"])
     
     st.divider()
-    st.markdown("### 📥 Download Template")
-    template_df = create_template()
-    st.download_button(
-        label="Download Excel Template",
-        data=convert_df(template_df),
-        file_name="MTT_Template.csv",
-        mime="text/csv",
+    st.header("🎨 Graph Customization")
+    
+    # 1. เลือก Theme สี
+    theme_choice = st.selectbox(
+        "Color Theme", 
+        ["Standard (Red/Blue)", "Publication (Black/White)", "Pastel (Soft)", "Nature (Green/Orange)"]
     )
+    
+    # 2. เลือกรูปทรงจุด IC50
+    marker_choice = st.selectbox(
+        "IC50/CC50 Marker Shape", 
+        ["Star (*)", "Diamond (D)", "Circle (o)", "Cross (X)", "Triangle (^)"]
+    )
+    marker_map = {"Star (*)": '*', "Diamond (D)": 'D', "Circle (o)": 'o', "Cross (X)": 'X', "Triangle (^)": '^'}
+    
+    st.info("Tip: เลือก 'Publication' หากต้องการกราฟขาวดำสำหรับลงเปเปอร์")
+
+# ==========================================
+# 3. INPUT SECTION (With Name Editing)
+# ==========================================
+
+# เลือกโหมด
+analysis_mode = st.radio(
+    "1️⃣ เลือกโหมดการวิเคราะห์:",
+    ["IC50 Only (Target Cells)", "CC50 Only (Normal Cells)", "Both (Calculate SI)"],
+    horizontal=True
+)
+
+st.divider()
+st.markdown("### 2️⃣ นำเข้าข้อมูลและตั้งชื่อเซลล์")
+
+def render_input_box(label, key_prefix, default_mock_normal=False):
+    """สร้างกล่องรับข้อมูลพร้อมช่องตั้งชื่อ"""
+    with st.container(border=True):
+        st.markdown(f"**ข้อมูล: {label}**")
+        
+        # --- FEATURE: Custom Name Input ---
+        custom_name = st.text_input(f"🏷️ ระบุชื่อเซลล์ (จะแสดงในกราฟ)", value=label, key=f"{key_prefix}_name")
+        
+        # Input Method
+        method = st.radio(
+            f"วิธีนำเข้าข้อมูล:",
+            ["📂 Upload Excel/CSV", "⌨️ Manual Input", "🎲 Demo Data"],
+            key=f"{key_prefix}_method",
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+        
+        df_out = None
+        
+        if method == "📂 Upload Excel/CSV":
+            f = st.file_uploader(f"เลือกไฟล์ ({label})", type=['csv', 'xlsx'], key=f"{key_prefix}_file")
+            if f:
+                if f.name.endswith('.csv'): df_out = pd.read_csv(f)
+                else: df_out = pd.read_excel(f)
+                if 'Concentration' not in df_out.columns:
+                     df_out.rename(columns={df_out.columns[0]: 'Concentration'}, inplace=True)
+                st.success(f"✅ Loaded {f.name}")
+                
+        elif method == "⌨️ Manual Input":
+            st.caption("Format: Conc, Rep1, Rep2... (0 สำหรับ Control)")
+            txt = st.text_area("วางข้อมูลที่นี่", height=100, key=f"{key_prefix}_txt", placeholder="0, 1.2, 1.1\n10, 0.8, 0.9")
+            if txt:
+                df_out = parse_manual_input(txt)
+                if df_out is not None: st.success("✅ Data Parsed")
+                else: st.error("❌ Invalid Format")
+
+        elif method == "🎲 Demo Data":
+            df_out = generate_mock_data(is_normal=default_mock_normal)
+            st.info("✅ Mock Data Loaded")
+            
+        return df_out, custom_name
 
 col1, col2 = st.columns(2)
+data_cancer, data_normal = None, None
+c_name, n_name = "Target Cells", "Normal Cells"
 
-data_normal = None
-data_cancer = None
+if analysis_mode == "IC50 Only (Target Cells)":
+    with col1: data_cancer, c_name = render_input_box("Target Cells", "cancer", False)
 
-with col1:
-    st.subheader("🛡️ Normal Cells (for CC50)")
-    file_n = st.file_uploader("Upload CSV/Excel (Normal)", type=['csv', 'xlsx'])
-    if file_n:
-        if file_n.name.endswith('.csv'): data_normal = pd.read_csv(file_n)
-        else: data_normal = pd.read_excel(file_n)
-        st.success("Loaded Normal Cells Data")
+elif analysis_mode == "CC50 Only (Normal Cells)":
+    with col1: data_normal, n_name = render_input_box("Normal Cells", "normal", True)
 
-with col2:
-    st.subheader("🦀 Cancer/Target Cells (for IC50)")
-    file_c = st.file_uploader("Upload CSV/Excel (Cancer)", type=['csv', 'xlsx'])
-    if file_c:
-        if file_c.name.endswith('.csv'): data_cancer = pd.read_csv(file_c)
-        else: data_cancer = pd.read_excel(file_c)
-        st.success("Loaded Cancer Cells Data")
+elif analysis_mode == "Both (Calculate SI)":
+    with col1: data_normal, n_name = render_input_box("Normal Cells", "normal", True)
+    with col2: data_cancer, c_name = render_input_box("Target Cells", "cancer", False)
 
-if st.button("🚀 Analyze Data", type="primary"):
-    results = {}
-    if data_normal is not None:
-        results['normal'] = analyze_data(data_normal, blank_od)
-        results['normal']['name'] = "Normal Cells"
-    
-    if data_cancer is not None:
-        results['cancer'] = analyze_data(data_cancer, blank_od)
-        results['cancer']['name'] = "Cancer Cells"
+# ==========================================
+# 4. ANALYSIS & PLOTTING
+# ==========================================
+ready = False
+if analysis_mode == "IC50 Only (Target Cells)" and data_cancer is not None: ready = True
+elif analysis_mode == "CC50 Only (Normal Cells)" and data_normal is not None: ready = True
+elif analysis_mode == "Both (Calculate SI)" and data_cancer is not None and data_normal is not None: ready = True
 
-    # --- Result Display ---
-    if results:
-        st.divider()
-        st.header("📊 Results")
+if ready:
+    st.divider()
+    if st.button("🚀 Run Analysis & Plot", type="primary", use_container_width=True):
+        results = {}
         
-        # Summary Metrics
-        cols = st.columns(3)
+        # Analyze
+        if data_cancer is not None:
+            res = analyze_data(data_cancer, blank_od)
+            res['name'] = c_name # ใช้ชื่อที่ User ตั้งเอง
+            results['cancer'] = res
+            
+        if data_normal is not None:
+            res = analyze_data(data_normal, blank_od)
+            res['name'] = n_name # ใช้ชื่อที่ User ตั้งเอง
+            results['normal'] = res
+
+        # Display Metrics
+        st.markdown("### 📊 ผลลัพธ์ (Results)")
+        m_cols = st.columns(3)
         if 'cancer' in results and results['cancer']['success']:
-            cols[0].metric("IC50 (Target)", f"{results['cancer']['ic50']:.4f}", f"R2: {results['cancer']['r2']:.2f}")
+            m_cols[0].metric(f"IC50 ({c_name})", f"{results['cancer']['ic50']:.4f}", f"R²: {results['cancer']['r2']:.2f}")
         
         if 'normal' in results and results['normal']['success']:
-            cols[1].metric("CC50 (Normal)", f"{results['normal']['ic50']:.4f}", f"R2: {results['normal']['r2']:.2f}")
+            m_cols[1].metric(f"CC50 ({n_name})", f"{results['normal']['ic50']:.4f}", f"R²: {results['normal']['r2']:.2f}")
             
         if 'cancer' in results and 'normal' in results and results['cancer']['success'] and results['normal']['success']:
             si = results['normal']['ic50'] / results['cancer']['ic50']
-            cols[2].metric("Selectivity Index (SI)", f"{si:.4f}", delta="Safe" if si > 3 else "Toxic")
+            m_cols[2].metric("Selectivity Index (SI)", f"{si:.4f}", delta="Safe (>3)" if si > 3 else "Toxic")
 
-        # --- Plotting ---
-        st.subheader("📈 Dose-Response Curve")
+        # --- PLOTTING LOGIC (Custom Style) ---
+        st.markdown("### 📈 Dose-Response Curve")
         
-        # Theme Config
+        # Setup Theme
         theme_cfg = {
-            "Standard (Red/Blue)": {'style': 'whitegrid', 'colors': ['#E63946', '#1D3557']},
-            "Publication (Black/White)": {'style': 'ticks', 'colors': ['black', '#666666']},
-            "Pastel": {'style': 'whitegrid', 'colors': ['#FF9AA2', '#85E3FF']},
-            "Nature": {'style': 'darkgrid', 'colors': ['#2A9D8F', '#F4A261']}
+            "Standard (Red/Blue)": {'style': 'whitegrid', 'colors': ['#E63946', '#1D3557'], 'bg': 'white'},
+            "Publication (Black/White)": {'style': 'ticks', 'colors': ['black', '#666666'], 'bg': 'white'},
+            "Pastel (Soft)": {'style': 'whitegrid', 'colors': ['#FF9AA2', '#85E3FF'], 'bg': '#FAFAFA'},
+            "Nature (Green/Orange)": {'style': 'darkgrid', 'colors': ['#2A9D8F', '#F4A261'], 'bg': '#F0F0F0'}
         }
-        sel_theme = theme_cfg[theme]
-        sns.set_style(sel_theme['style'])
+        selected_theme = theme_cfg[theme_choice]
+        sns.set_style(selected_theme['style'])
         
         fig, ax = plt.subplots(figsize=(8, 5))
-        colors = sel_theme['colors']
-        markers = ['o', 's']
+        fig.patch.set_facecolor(selected_theme['bg'])
+        ax.set_facecolor(selected_theme['bg'])
+        
+        colors = selected_theme['colors']
+        markers = ['o', 's'] # สำหรับ Data points
+        ic50_marker = marker_map[marker_choice] # สำหรับจุด IC50
         
         idx = 0
         for key, res in results.items():
@@ -154,39 +248,45 @@ if st.button("🚀 Analyze Data", type="primary"):
             
             c = colors[idx % 2]
             
-            # Error bar
+            # 1. Plot Error Bar (Data)
             ax.errorbar(df.loc[mask, 'Concentration'], df.loc[mask, '% Survival'], 
-                        yerr=df.loc[mask, 'SD'], fmt=markers[idx%2], color=c, capsize=4, label=f"{res['name']}")
+                        yerr=df.loc[mask, 'SD'], fmt=markers[idx%2], color=c, 
+                        capsize=4, label=f"{res['name']} Data", alpha=0.7)
             
-            # Fit line
+            # 2. Plot Fit Line
             x_smooth = np.logspace(np.log10(df.loc[mask, 'Concentration'].min()/2), np.log10(df.loc[mask, 'Concentration'].max()*2), 100)
-            ax.plot(x_smooth, four_PL(x_smooth, *res['popt']), '-', color=c, alpha=0.8)
+            val_label = f"{res['ic50']:.2f}"
+            ax.plot(x_smooth, four_PL(x_smooth, *res['popt']), '-', color=c, linewidth=2, label=f"{res['name']} Fit ({val_label})")
             
-            # Star
-            ax.plot(res['ic50'], 50, '*', color='gold', markersize=15, markeredgecolor='black')
+            # 3. Plot Custom Marker for IC50/CC50
+            ax.plot(res['ic50'], 50, marker=ic50_marker, color='gold', markersize=12, markeredgecolor='black', zorder=10)
             
             idx += 1
             
         ax.set_xscale('log')
-        ax.axhline(50, color='gray', linestyle='--')
+        ax.axhline(50, color='gray', linestyle='--', alpha=0.5)
         ax.set_xlabel('Concentration')
-        ax.set_ylabel('% Survival')
+        ax.set_ylabel('% Cell Survival')
         ax.set_ylim(-10, 120)
-        ax.legend()
+        ax.legend(frameon=True, fancybox=True, shadow=True)
+        ax.grid(True, which='major', alpha=0.3)
         
-        st.pyplot(fig)
-        
-        # Save Plot Button
-        buf = BytesIO()
-        fig.savefig(buf, format="png", dpi=300)
-        st.download_button("💾 Download Graph (300 DPI)", data=buf.getvalue(), file_name="MTT_Plot.png", mime="image/png")
-        
-        # --- Data Tables ---
-        st.subheader("📋 Detailed Data")
+        col_plot, col_dl = st.columns([3, 1])
+        with col_plot:
+            st.pyplot(fig)
+        with col_dl:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+            st.download_button("💾 Download Graph (300 DPI)", data=buf.getvalue(), file_name="MTT_Custom_Graph.png", mime="image/png")
+            
+        # Tables
+        st.divider()
+        st.markdown("### 📋 Download Report")
         for key, res in results.items():
-            with st.expander(f"Show Data: {res['name']}"):
+            with st.expander(f"View Data: {res['name']}"):
                 st.dataframe(res['df'])
-                st.download_button(f"Download CSV ({res['name']})", 
-                                   data=convert_df(res['df']), 
-                                   file_name=f"{key}_analysis.csv", 
-                                   mime="text/csv")
+                st.download_button(f"Download CSV ({res['name']})", data=convert_df(res['df']), file_name=f"{res['name']}_data.csv")
+
+else:
+    st.info("👈 กรุณากรอกข้อมูลให้ครบถ้วนเพื่อเริ่มวิเคราะห์")
