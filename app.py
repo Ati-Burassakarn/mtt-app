@@ -19,6 +19,15 @@ def four_PL(x, A, B, C, D):
 def convert_df(df):
     return df.to_csv(index=False).encode('utf-8')
 
+def create_template():
+    """สร้าง Template DataFrame"""
+    return pd.DataFrame({
+        'Concentration': [0, 1, 10, 100],
+        'Rep1': [1.0, 0.9, 0.5, 0.1],
+        'Rep2': [1.02, 0.88, 0.48, 0.12],
+        'Rep3': [0.98, 0.92, 0.52, 0.09]
+    })
+
 def parse_manual_input(text_input):
     """แปลงข้อความ Manual Input เป็น DataFrame"""
     try:
@@ -85,32 +94,40 @@ def analyze_data(df, blank_od):
         return {'df': stats_df, 'success': False, 'ic50': None, 'r2': 0}
 
 # ==========================================
-# 2. SIDEBAR SETTINGS (Graph Style)
+# 2. SIDEBAR SETTINGS (Graph Style & Template)
 # ==========================================
 st.title("🧪 MTT Analysis: Custom Graphing")
 st.markdown("วิเคราะห์ IC50/CC50 พร้อมระบุชื่อเซลล์และปรับแต่งกราฟได้ตามต้องการ")
 
 with st.sidebar:
-    st.header("⚙️ General Settings")
+    st.header("📥 Tools & Settings")
+    
+    # --- Template Download Button ---
+    template_df = create_template()
+    st.download_button(
+        label="📄 Download Data Template",
+        data=convert_df(template_df),
+        file_name="MTT_Template.csv",
+        mime="text/csv",
+        help="ดาวน์โหลดไฟล์ CSV ต้นแบบสำหรับกรอกข้อมูล"
+    )
+    st.divider()
+    
     blank_od = st.number_input("Blank OD Value", value=0.05, step=0.01)
     
     st.divider()
     st.header("🎨 Graph Customization")
     
-    # 1. เลือก Theme สี
     theme_choice = st.selectbox(
         "Color Theme", 
         ["Standard (Red/Blue)", "Publication (Black/White)", "Pastel (Soft)", "Nature (Green/Orange)"]
     )
     
-    # 2. เลือกรูปทรงจุด IC50
     marker_choice = st.selectbox(
         "IC50/CC50 Marker Shape", 
         ["Star (*)", "Diamond (D)", "Circle (o)", "Cross (X)", "Triangle (^)"]
     )
     marker_map = {"Star (*)": '*', "Diamond (D)": 'D', "Circle (o)": 'o', "Cross (X)": 'X', "Triangle (^)": '^'}
-    
-    st.info("Tip: เลือก 'Publication' หากต้องการกราฟขาวดำสำหรับลงเปเปอร์")
 
 # ==========================================
 # 3. INPUT SECTION (With Name Editing)
@@ -131,10 +148,8 @@ def render_input_box(label, key_prefix, default_mock_normal=False):
     with st.container(border=True):
         st.markdown(f"**ข้อมูล: {label}**")
         
-        # --- FEATURE: Custom Name Input ---
         custom_name = st.text_input(f"🏷️ ระบุชื่อเซลล์ (จะแสดงในกราฟ)", value=label, key=f"{key_prefix}_name")
         
-        # Input Method
         method = st.radio(
             f"วิธีนำเข้าข้อมูล:",
             ["📂 Upload Excel/CSV", "⌨️ Manual Input", "🎲 Demo Data"],
@@ -195,15 +210,14 @@ if ready:
     if st.button("🚀 Run Analysis & Plot", type="primary", use_container_width=True):
         results = {}
         
-        # Analyze
         if data_cancer is not None:
             res = analyze_data(data_cancer, blank_od)
-            res['name'] = c_name # ใช้ชื่อที่ User ตั้งเอง
+            res['name'] = c_name
             results['cancer'] = res
             
         if data_normal is not None:
             res = analyze_data(data_normal, blank_od)
-            res['name'] = n_name # ใช้ชื่อที่ User ตั้งเอง
+            res['name'] = n_name
             results['normal'] = res
 
         # Display Metrics
@@ -219,10 +233,9 @@ if ready:
             si = results['normal']['ic50'] / results['cancer']['ic50']
             m_cols[2].metric("Selectivity Index (SI)", f"{si:.4f}", delta="Safe (>3)" if si > 3 else "Toxic")
 
-        # --- PLOTTING LOGIC (Custom Style) ---
+        # --- PLOTTING ---
         st.markdown("### 📈 Dose-Response Curve")
         
-        # Setup Theme
         theme_cfg = {
             "Standard (Red/Blue)": {'style': 'whitegrid', 'colors': ['#E63946', '#1D3557'], 'bg': 'white'},
             "Publication (Black/White)": {'style': 'ticks', 'colors': ['black', '#666666'], 'bg': 'white'},
@@ -237,56 +250,4 @@ if ready:
         ax.set_facecolor(selected_theme['bg'])
         
         colors = selected_theme['colors']
-        markers = ['o', 's'] # สำหรับ Data points
-        ic50_marker = marker_map[marker_choice] # สำหรับจุด IC50
-        
-        idx = 0
-        for key, res in results.items():
-            if not res['success']: continue
-            df = res['df']
-            mask = df['Concentration'] > 0
-            
-            c = colors[idx % 2]
-            
-            # 1. Plot Error Bar (Data)
-            ax.errorbar(df.loc[mask, 'Concentration'], df.loc[mask, '% Survival'], 
-                        yerr=df.loc[mask, 'SD'], fmt=markers[idx%2], color=c, 
-                        capsize=4, label=f"{res['name']} Data", alpha=0.7)
-            
-            # 2. Plot Fit Line
-            x_smooth = np.logspace(np.log10(df.loc[mask, 'Concentration'].min()/2), np.log10(df.loc[mask, 'Concentration'].max()*2), 100)
-            val_label = f"{res['ic50']:.2f}"
-            ax.plot(x_smooth, four_PL(x_smooth, *res['popt']), '-', color=c, linewidth=2, label=f"{res['name']} Fit ({val_label})")
-            
-            # 3. Plot Custom Marker for IC50/CC50
-            ax.plot(res['ic50'], 50, marker=ic50_marker, color='gold', markersize=12, markeredgecolor='black', zorder=10)
-            
-            idx += 1
-            
-        ax.set_xscale('log')
-        ax.axhline(50, color='gray', linestyle='--', alpha=0.5)
-        ax.set_xlabel('Concentration')
-        ax.set_ylabel('% Cell Survival')
-        ax.set_ylim(-10, 120)
-        ax.legend(frameon=True, fancybox=True, shadow=True)
-        ax.grid(True, which='major', alpha=0.3)
-        
-        col_plot, col_dl = st.columns([3, 1])
-        with col_plot:
-            st.pyplot(fig)
-        with col_dl:
-            st.markdown("<br><br>", unsafe_allow_html=True)
-            buf = BytesIO()
-            fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
-            st.download_button("💾 Download Graph (300 DPI)", data=buf.getvalue(), file_name="MTT_Custom_Graph.png", mime="image/png")
-            
-        # Tables
-        st.divider()
-        st.markdown("### 📋 Download Report")
-        for key, res in results.items():
-            with st.expander(f"View Data: {res['name']}"):
-                st.dataframe(res['df'])
-                st.download_button(f"Download CSV ({res['name']})", data=convert_df(res['df']), file_name=f"{res['name']}_data.csv")
-
-else:
-    st.info("👈 กรุณากรอกข้อมูลให้ครบถ้วนเพื่อเริ่มวิเคราะห์")
+        markers
